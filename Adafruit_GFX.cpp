@@ -240,6 +240,22 @@ void Adafruit_GFX::writeFillRect(int16_t x, int16_t y, int16_t w, int16_t h,
 
 /**************************************************************************/
 /*!
+   @brief    Write a rectangle completely with one color, overwrite in subclasses if startWrite is defined!
+    @param    x   Top left corner x coordinate
+    @param    y   Top left corner y coordinate
+    @param    w   Width in pixels
+    @param    h   Height in pixels
+   @param    color 16-bit 5-6-5 Color to fill with
+*/
+/**************************************************************************/
+void Adafruit_GFX::writeFillRectSmall(int16_t x, int16_t y, uint8_t w, uint8_t h,
+        uint16_t color) {
+    // Overwrite in subclasses if desired!
+    fillRect(x,y,w,h,color);
+}
+
+/**************************************************************************/
+/*!
    @brief    End a display-writing routine, overwrite in subclasses if startWrite is defined!
 */
 /**************************************************************************/
@@ -1075,6 +1091,9 @@ void Adafruit_GFX::drawChar(int16_t x, int16_t y, unsigned char c,
 void Adafruit_GFX::drawChar(int16_t x, int16_t y, unsigned char c,
   uint16_t color, uint16_t bg, uint8_t size_x, uint8_t size_y) {
 
+      bool fillBg = (bg != color);
+      bool isSizeOne = (size_x == 1 && size_y == 1);
+
     if(!gfxFont) { // 'Classic' built-in font
 
         if((x >= _width)            || // Clip right
@@ -1088,23 +1107,31 @@ void Adafruit_GFX::drawChar(int16_t x, int16_t y, unsigned char c,
         startWrite();
         for(int8_t i=0; i<5; i++ ) { // Char bitmap = 5 columns
             uint8_t line = pgm_read_byte(&font[c * 5 + i]);
-            for(int8_t j=0; j<8; j++, line >>= 1) {
-                if(line & 1) {
-                    if(size_x == 1 && size_y == 1)
+
+            if(isSizeOne) {
+                for(int8_t j=0; j<8; j++, line >>= 1) {
+                    if(line & 1) {
                         writePixel(x+i, y+j, color);
-                    else
-                        writeFillRect(x+i*size_x, y+j*size_y, size_x, size_y, color);
-                } else if(bg != color) {
-                    if(size_x == 1 && size_y == 1)
+                    } else if(fillBg) {
                         writePixel(x+i, y+j, bg);
-                    else
-                        writeFillRect(x+i*size_x, y+j*size_y, size_x, size_y, bg);
+                    }
                 }
             }
+            else {
+                for(int8_t j=0; j<8; j++, line >>= 1) {
+                    if(line & 1) {
+                        writeFillRectSmall(x+i*size_x, y+j*size_y, size_x, size_y, color);
+                    } else if(fillBg) {
+                        writeFillRectSmall(x+i*size_x, y+j*size_y, size_x, size_y, bg);
+                    }
+                }
+            }   
         }
-        if(bg != color) { // If opaque, draw vertical line for last column
-            if(size_x == 1 && size_y == 1) writeFastVLine(x+5, y, 8, bg);
-            else          writeFillRect(x+5*size_x, y, size_x, 8*size_y, bg);
+        if(fillBg) { // If opaque, draw vertical line for last column
+            if(isSizeOne)
+                writeFastVLine(x+5, y, 8, bg);
+            else
+                writeFillRectSmall(x+5*size_x, y, size_x, 8*size_y, bg);
         }
         endWrite();
 
@@ -1159,7 +1186,7 @@ void Adafruit_GFX::drawChar(int16_t x, int16_t y, unsigned char c,
                     if(size_x == 1 && size_y == 1) {
                         writePixel(x+xo+xx, y+yo+yy, color);
                     } else {
-                        writeFillRect(x+(xo16+xx)*size_x, y+(yo16+yy)*size_y,
+                        writeFillRectSmall(x+(xo16+xx)*size_x, y+(yo16+yy)*size_y,
                           size_x, size_y, color);
                     }
                 }
