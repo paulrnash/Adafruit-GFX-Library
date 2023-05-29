@@ -909,7 +909,7 @@ void Adafruit_SPITFT::setSPISpeed(uint32_t freq) {
 */
 void Adafruit_SPITFT::startWrite(void) {
     SPI_BEGIN_TRANSACTION();
-    if(_cs >= 0) SPI_CS_LOW();
+    SPI_CS_LOW();
 }
 
 /*!
@@ -919,7 +919,7 @@ void Adafruit_SPITFT::startWrite(void) {
             for all display types; not an SPI-specific function.
 */
 void Adafruit_SPITFT::endWrite(void) {
-    if(_cs >= 0) SPI_CS_HIGH();
+    SPI_CS_HIGH();
     SPI_END_TRANSACTION();
 }
 
@@ -942,7 +942,12 @@ void Adafruit_SPITFT::endWrite(void) {
 void Adafruit_SPITFT::writePixel(int16_t x, int16_t y, uint16_t color) {
     if((x >= 0) && (x < _width) && (y >= 0) && (y < _height)) {
         setAddrWindow(x, y, 1, 1);
+#if defined(__AVR__)
+        AVR_WRITESPI((uint8_t)(color >> 8));
+        AVR_WRITESPI((uint8_t)(color));
+#else
         SPI_WRITE16(color);
+#endif
     }
 }
 
@@ -1096,6 +1101,89 @@ void Adafruit_SPITFT::dmaWait(void) {
  #endif // end __SAMD51__ || _SAMD21_
 #endif
 }
+
+#define USE_FAST_FILLS
+#if !defined(USE_FAST_FILLS)
+
+inline void Adafruit_SPITFT::writeColorFast(uint16_t color, uint32_t len) { writeColor(color, len); }
+inline void Adafruit_SPITFT::writeColorFastSmall(uint16_t color, uint16_t len) { writeColor(color, len); }
+
+#else
+
+void Adafruit_SPITFT::writeColorFast(uint16_t color, uint32_t len) {
+#if defined(__AVR__)
+
+#define WRITE_COLOR_LOOP_UNROLL 4
+    uint8_t hi = color >> 8, lo = color;
+
+    uint16_t hiloop_cnt = len / (256 * WRITE_COLOR_LOOP_UNROLL);
+    uint8_t  tail_loops, unrolled_loops;
+
+    len -= ((uint32_t)hiloop_cnt * 256 * WRITE_COLOR_LOOP_UNROLL);
+    tail_loops = (uint8_t)(len / WRITE_COLOR_LOOP_UNROLL);
+    len -= (uint32_t)tail_loops * WRITE_COLOR_LOOP_UNROLL;
+
+    uint16_t hloop = hiloop_cnt;
+
+    do {
+        if (hloop) {
+            unrolled_loops = 255;
+            hloop--;
+        } else {
+            unrolled_loops = tail_loops;
+        }
+
+        do {
+            AVR_WRITESPI(hi);
+            AVR_WRITESPI(lo);
+            AVR_WRITESPI(hi);
+            AVR_WRITESPI(lo);
+            AVR_WRITESPI(hi);
+            AVR_WRITESPI(lo);
+            AVR_WRITESPI(hi);
+            AVR_WRITESPI(lo);
+        } while (unrolled_loops--);
+    } while (hloop);
+
+    for (uint8_t a = len; a > 0; a--) {
+        AVR_WRITESPI(hi);
+        AVR_WRITESPI(lo);
+    }
+#else
+    writeColor(color, len);
+#endif
+}
+
+void Adafruit_SPITFT::writeColorFastSmall(uint16_t color, uint16_t len) {
+#if defined(__AVR__)
+
+#define WRITE_COLOR_LOOP_UNROLL 4
+    uint8_t hi = color >> 8, lo = color;
+
+    uint8_t tail_loops = (uint8_t)(len / WRITE_COLOR_LOOP_UNROLL);
+    len -= (uint16_t)tail_loops * WRITE_COLOR_LOOP_UNROLL;
+
+    do {
+        AVR_WRITESPI(hi);
+        AVR_WRITESPI(lo);
+        AVR_WRITESPI(hi);
+        AVR_WRITESPI(lo);
+        AVR_WRITESPI(hi);
+        AVR_WRITESPI(lo);
+        AVR_WRITESPI(hi);
+        AVR_WRITESPI(lo);
+    } while (tail_loops--);
+
+    for (uint8_t a = len; a > 0; a--) {
+        AVR_WRITESPI(hi);
+        AVR_WRITESPI(lo);
+    }
+#else
+    writeColor(color, len);
+#endif
+}
+
+#endif // USE_FAST_FILLS
 
 /*!
     @brief  Issue a series of pixels, all the same color. Not self-
@@ -1387,6 +1475,44 @@ void Adafruit_SPITFT::writeFillRect(int16_t x, int16_t y,
 }
 
 /*!
+    @brief  Draw a filled rectangle to the display. Not self-contained;
+            should follow startWrite(). Typically used by higher-level
+            graphics primitives; user code shouldn't need to call this and
+            is likely to use the self-contained fillRect() instead.
+            writeFillRect() performs its own edge clipping and rejection;
+            see writeFillRectPreclipped() for a more 'raw' implementation.
+    @param  x      Horizontal position of first corner.
+    @param  y      Vertical position of first corner.
+    @param  w      Rectangle width in pixels.
+    @param  h      Rectangle height in pixels.
+    @param  color  16-bit fill color in '565' RGB format.
+    @note   Written in this deep-nested way because C by definition will
+            optimize for the 'if' case, not the 'else' -- avoids branches
+            and rejects clipped rectangles at the least-work possibility.
+*/
+void Adafruit_SPITFT::writeFillRectSmall(int16_t x, int16_t y,
+  uint8_t w, uint8_t h, uint16_t color) {
+    if(w && h) {                            // Nonzero width and height?
+        if(x < _width) {                    // Not off right
+            if(y < _height) {               // Not off bottom
+                int16_t x2 = x + w - 1;
+                if(x2 >= 0) {               // Not off left
+                    int16_t y2 = y + h - 1;
+                    if(y2 >= 0) {           // Not off top
+                        // Rectangle partly or fully overlaps screen
+                        if(x  <  0)       { x = 0; w = x2 + 1; } // Clip left
+                        if(y  <  0)       { y = 0; h = y2 + 1; } // Clip top
+                        if(x2 >= _width)  { w = _width  - x;   } // Clip right
+                        if(y2 >= _height) { h = _height - y;   } // Clip bottom
+                        writeFillRectSmallPreclipped(x, y, w, h, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*!
     @brief  Draw a horizontal line on the display. Performs edge clipping
             and rejection. Not self-contained; should follow startWrite().
             Typically used by higher-level graphics primitives; user code
@@ -1411,7 +1537,7 @@ void inline Adafruit_SPITFT::writeFastHLine(int16_t x, int16_t y, int16_t w,
                 // Line partly or fully overlaps screen
                 if(x  <  0)       { x = 0; w = x2 + 1; } // Clip left
                 if(x2 >= _width)  { w = _width  - x;   } // Clip right
-                writeFillRectPreclipped(x, y, w, 1, color);
+                writeFillRectSmallPreclipped(x, y, w, 1, color);
             }
         }
     }
@@ -1442,7 +1568,7 @@ void inline Adafruit_SPITFT::writeFastVLine(int16_t x, int16_t y, int16_t h,
                 // Line partly or fully overlaps screen
                 if(y  <  0)       { y = 0; h = y2 + 1; } // Clip top
                 if(y2 >= _height) { h = _height - y;   } // Clip bottom
-                writeFillRectPreclipped(x, y, 1, h, color);
+                writeFillRectSmallPreclipped(x, y, 1, h, color);
             }
         }
     }
@@ -1471,7 +1597,34 @@ void inline Adafruit_SPITFT::writeFastVLine(int16_t x, int16_t y, int16_t h,
 inline void Adafruit_SPITFT::writeFillRectPreclipped(int16_t x, int16_t y,
   int16_t w, int16_t h, uint16_t color) {
     setAddrWindow(x, y, w, h);
-    writeColor(color, (uint32_t)w * h);
+    writeColorFast(color, (uint32_t)w * h);
+}
+
+
+/*!
+    @brief  A lower-level version of writeFillRectSmall(). This version requires
+            all inputs are in-bounds, that width and height are positive,
+            and no part extends offscreen. NO EDGE CLIPPING OR REJECTION IS
+            PERFORMED. If higher-level graphics primitives are written to
+            handle their own clipping earlier in the drawing process, this
+            can avoid unnecessary function calls and repeated clipping
+            operations in the lower-level functions.
+    @param  x      Horizontal position of first corner. MUST BE WITHIN
+                   SCREEN BOUNDS.
+    @param  y      Vertical position of first corner. MUST BE WITHIN SCREEN
+                   BOUNDS.
+    @param  w      Rectangle width in pixels. MUST BE POSITIVE AND NOT
+                   EXTEND OFF SCREEN.
+    @param  h      Rectangle height in pixels. MUST BE POSITIVE AND NOT
+                   EXTEND OFF SCREEN.
+    @param  color  16-bit fill color in '565' RGB format.
+    @note   This is a new function, no graphics primitives besides rects
+            and horizontal/vertical lines are written to best use this yet.
+*/
+inline void Adafruit_SPITFT::writeFillRectSmallPreclipped(int16_t x, int16_t y,
+  uint8_t w, uint8_t h, uint16_t color) {
+    setAddrWindow(x, y, w, h);
+    writeColorFastSmall(color, (uint16_t)w * h);
 }
 
 
@@ -1584,7 +1737,7 @@ void Adafruit_SPITFT::drawFastHLine(int16_t x, int16_t y, int16_t w,
                 if(x  <  0)       { x = 0; w = x2 + 1; } // Clip left
                 if(x2 >= _width)  { w = _width  - x;   } // Clip right
                 startWrite();
-                writeFillRectPreclipped(x, y, w, 1, color);
+                writeFillRectSmallPreclipped(x, y, w, 1, color);
                 endWrite();
             }
         }
@@ -1620,7 +1773,7 @@ void Adafruit_SPITFT::drawFastVLine(int16_t x, int16_t y, int16_t h,
                 if(y  <  0)       { y = 0; h = y2 + 1; } // Clip top
                 if(y2 >= _height) { h = _height - y;   } // Clip bottom
                 startWrite();
-                writeFillRectPreclipped(x, y, 1, h, color);
+                writeFillRectSmallPreclipped(x, y, 1, h, color);
                 endWrite();
             }
         }
@@ -1727,7 +1880,7 @@ uint16_t Adafruit_SPITFT::color565(uint8_t red, uint8_t green, uint8_t blue) {
  */
 void Adafruit_SPITFT::sendCommand(uint8_t commandByte, uint8_t *dataBytes, uint8_t numDataBytes) {
     SPI_BEGIN_TRANSACTION();
-    if(_cs >= 0) SPI_CS_LOW();
+    SPI_CS_LOW();
   
     SPI_DC_LOW(); // Command mode
     spiWrite(commandByte); // Send the command byte
@@ -1738,7 +1891,7 @@ void Adafruit_SPITFT::sendCommand(uint8_t commandByte, uint8_t *dataBytes, uint8
       dataBytes++;
     }
   
-    if(_cs >= 0) SPI_CS_HIGH();
+    SPI_CS_HIGH();
     SPI_END_TRANSACTION();
 }
 
@@ -1750,7 +1903,7 @@ void Adafruit_SPITFT::sendCommand(uint8_t commandByte, uint8_t *dataBytes, uint8
  */
 void Adafruit_SPITFT::sendCommand(uint8_t commandByte, const uint8_t *dataBytes, uint8_t numDataBytes) {
     SPI_BEGIN_TRANSACTION();
-    if(_cs >= 0) SPI_CS_LOW();
+    SPI_CS_LOW();
   
     SPI_DC_LOW(); // Command mode
     spiWrite(commandByte); // Send the command byte
@@ -1760,7 +1913,7 @@ void Adafruit_SPITFT::sendCommand(uint8_t commandByte, const uint8_t *dataBytes,
       spiWrite(pgm_read_byte(dataBytes++)); // Send the data bytes
     }
   
-    if(_cs >= 0) SPI_CS_HIGH();
+    SPI_CS_HIGH();
     SPI_END_TRANSACTION();
 }
 

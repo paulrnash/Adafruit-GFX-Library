@@ -30,6 +30,7 @@
 #if defined(__AVR__)
  typedef uint8_t  ADAGFX_PORT_t;            ///< PORT values are 8-bit
  #define USE_FAST_PINIO              ///< Use direct PORT register access
+ #define USE_FAST_FILLS
 #elif defined(ARDUINO_STM32_FEATHER) // WICED
  typedef class HardwareSPI SPIClass; ///< SPI is a bit odd on WICED
  typedef uint32_t ADAGFX_PORT_t;            ///< PORT values are 32-bit
@@ -225,6 +226,15 @@ class Adafruit_SPITFT : public Adafruit_GFX {
     // Another new function, companion to the new non-blocking
     // writePixels() variant.
     void dmaWait(void);
+
+    // These functions trade code space for speed by unrolling loops and using
+    // smaller counter vars. Speedups range from 8-24% faster.
+    void         writeColorFast(uint16_t color, uint32_t len);
+    void         writeColorFastSmall(uint16_t color, uint16_t len);
+    void         writeFillRectSmall(int16_t x, int16_t y, uint8_t w, uint8_t h,
+                   uint16_t color);
+    inline void  writeFillRectSmallPreclipped(int16_t x, int16_t y,
+                   uint8_t w, uint8_t h, uint16_t color);
 
 
     // These functions are similar to the 'write' functions above, but with
