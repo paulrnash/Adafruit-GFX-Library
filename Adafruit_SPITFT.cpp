@@ -1142,10 +1142,6 @@ void Adafruit_SPITFT::writeColorFast(uint16_t color, uint32_t len) {
 
     uint16_t hloop = hiloop_cnt;
 
-    if (hiloop_cnt > 10) {
-        a = micros();
-    }
-
     // Run all the "high" loops which are 256 unrolls each.
     while (hloop--) {
         cLoops = 255;
