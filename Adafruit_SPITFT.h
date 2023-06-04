@@ -30,6 +30,8 @@
 #if defined(__AVR__)
  typedef uint8_t  ADAGFX_PORT_t;            ///< PORT values are 8-bit
  #define USE_FAST_PINIO              ///< Use direct PORT register access
+ #define USE_FAST_FILLS
+ #define USE_HYPER_SPI
 #elif defined(ARDUINO_STM32_FEATHER) // WICED
  typedef class HardwareSPI SPIClass; ///< SPI is a bit odd on WICED
  typedef uint32_t ADAGFX_PORT_t;            ///< PORT values are 32-bit
@@ -226,6 +228,15 @@ class Adafruit_SPITFT : public Adafruit_GFX {
     // writePixels() variant.
     void dmaWait(void);
 
+    // These functions trade code space for speed by unrolling loops and using
+    // smaller counter vars. Speedups range from 8-24% faster.
+    void         writeColorFast(uint16_t color, uint32_t len);
+    void         writeColorFastSmall(uint16_t color, uint16_t len);
+    void         writeFillRectSmall(int16_t x, int16_t y, uint8_t w, uint8_t h,
+                   uint16_t color);
+    inline void  writeFillRectSmallPreclipped(int16_t x, int16_t y,
+                   uint8_t w, uint8_t h, uint16_t color);
+
 
     // These functions are similar to the 'write' functions above, but with
     // a chip-select and/or SPI transaction built-in. They're typically used
@@ -269,6 +280,42 @@ class Adafruit_SPITFT : public Adafruit_GFX {
     // SPI_WRITE16 and SPI_WRITE32 anyway so those names were kept rather
     // than the less-obnoxious camelcase variants, oh well.
 
+#ifdef USE_HYPER_SPI
+    // 16-bit SPI write with minimal hand-tuned delay (assuming max DIV2 SPI rate)
+    static inline void _hyper_SpiWrite16(uint8_t _hi, uint8_t _lo) __attribute__((always_inline))
+    {
+        uint8_t temp;
+        __asm__ __volatile__
+        (
+            "   out	    %[spi],%[high]\n"				// write SPI data (18 cycles until next write)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            " nop\n"
+
+            "	out	    %[spi],%[low]\n"				// write SPI data (18 cycles until next write)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            "	adiw	r24,0\n"	// +2 (2-cycle NOP)
+            " nop\n"
+
+            : [temp] "=d" (temp)
+            : [spi] "I" (_SFR_IO_ADDR(SPDR)), [low] "r" ((uint8_t)_lo), [high] "r" ((uint8_t)_hi)
+            : 
+        );
+    }
+#endif // USE_HYPER_SPI
+
     // Placing these functions entirely in the class definition inlines
     // them implicitly them while allowing their use in other code:
 
@@ -278,7 +325,7 @@ class Adafruit_SPITFT : public Adafruit_GFX {
                 Despite function name, this is used even if the display
                 connection is parallel.
     */
-    void SPI_CS_HIGH(void) {
+    inline void SPI_CS_HIGH(void) {
     #if defined(USE_FAST_PINIO)
      #if defined(HAS_PORT_SET_CLR)
       #if defined(KINETISK)
@@ -300,7 +347,7 @@ class Adafruit_SPITFT : public Adafruit_GFX {
                 Despite function name, this is used even if the display
                 connection is parallel.
     */
-    void SPI_CS_LOW(void) {
+    inline void SPI_CS_LOW(void) {
     #if defined(USE_FAST_PINIO)
      #if defined(HAS_PORT_SET_CLR)
       #if defined(KINETISK)
@@ -319,7 +366,7 @@ class Adafruit_SPITFT : public Adafruit_GFX {
     /*!
         @brief  Set the data/command line HIGH (data mode).
     */
-    void SPI_DC_HIGH(void) {
+    inline void SPI_DC_HIGH(void) {
     #if defined(USE_FAST_PINIO)
      #if defined(HAS_PORT_SET_CLR)
       #if defined(KINETISK)
@@ -338,7 +385,7 @@ class Adafruit_SPITFT : public Adafruit_GFX {
     /*!
         @brief  Set the data/command line LOW (command mode).
     */
-    void SPI_DC_LOW(void) {
+    inline void SPI_DC_LOW(void) {
     #if defined(USE_FAST_PINIO)
      #if defined(HAS_PORT_SET_CLR)
       #if defined(KINETISK)
